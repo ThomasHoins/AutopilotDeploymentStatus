@@ -1,4 +1,4 @@
-# Verbindung zu Microsoft Graph
+# Verbindung zu Microsoft Graph (Beta-Endpunkte)
 Connect-MgGraph -Scopes "DeviceManagementServiceConfig.Read.All", "DeviceManagementManagedDevices.Read.All"
 
 # Autopilot-Geräte abrufen
@@ -9,6 +9,9 @@ do {
     $devices += $response.value
     $uri = $response.'@odata.nextLink'
 } while ($uri)
+
+$devices[0] | Format-List
+
 
 # Deployment-Profile abrufen
 $profiles = (Invoke-MgGraphRequest -Method GET -Uri "/beta/deviceManagement/windowsAutopilotDeploymentProfiles").value
@@ -22,10 +25,17 @@ do {
     $uri = $response.'@odata.nextLink'
 } while ($uri)
 
+$events[0] | Format-List
+
+
 # Daten zusammenführen
 $report = foreach ($device in $devices) {
     $profile = $profiles | Where-Object { $_.id -eq $device.deploymentProfileId }
-    $event   = $events   | Where-Object { $_.deviceSerialNumber -eq $device.serialNumber }
+
+    $event = $events | Where-Object {
+        $_.deviceSerialNumber -eq $device.serialNumber -or
+        $_.managedDeviceName -eq $device.displayName
+    } | Sort-Object eventDateTime -Descending | Select-Object -First 1
 
     [PSCustomObject]@{
         DeviceName          = $device.displayName
@@ -33,10 +43,6 @@ $report = foreach ($device in $devices) {
         UserPrincipalName   = $device.addressableUserName
         GroupTag            = $device.groupTag
         DeploymentProfile   = $profile.displayName
-        DeploymentStatus    = $device.deploymentProfileAssignmentStatus
-        AssignmentDate      = $device.deploymentProfileAssignedDateTime
-        Manufacturer        = $device.manufacturer
-        Model               = $device.model
         DeploymentStartTime = $event.enrollmentStartDateTime
         DeploymentEndTime   = $event.eventDateTime
         DeploymentState     = $event.deploymentState
@@ -59,10 +65,9 @@ $style = @"
 </style>
 "@
 
-# HTML-Tabelle mit CSS-Klassen je nach DeploymentState
 $htmlContent = @()
 $htmlContent += "<html><head><meta charset='UTF-8'><title>Autopilot Deployment Report</title>$style</head><body>"
-$htmlContent += "<h2>Autopilot Deployment Uebersicht</h2>"
+$htmlContent += "<h2>Autopilot Deployment Übersicht</h2>"
 $htmlContent += "<table><tr>" + ($report[0].psobject.Properties.Name | ForEach-Object { "<th>$_</th>" }) -join "" + "</tr>"
 
 foreach ($row in $report) {
@@ -77,7 +82,9 @@ foreach ($row in $report) {
 }
 
 $htmlContent += "</table></body></html>"
-$htmlContent -join "`n" | Out-File -Encoding UTF8 -FilePath $htmlPath
+
+# UTF-8 mit BOM schreiben
+[System.IO.File]::WriteAllText($htmlPath, ($htmlContent -join "`n"), [System.Text.Encoding]::UTF8)
 
 # Öffnen
 Invoke-Item $htmlPath
